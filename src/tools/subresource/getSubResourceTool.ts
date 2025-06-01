@@ -23,49 +23,58 @@ import { PaginationParams } from "../../types/index.js"; // Import PaginationPar
 export const getSubResourceTool = (server: McpServer, congressApiService: CongressApiService): void => { // Inject service instance
 
     const processGetSubResourceRequest = async (args: CongressGetSubResourceParams, extra: RequestHandlerExtra): Promise<CallToolResult> => {
-        logger.debug(`Processing ${TOOL_NAME} request`, { args, sessionId: extra.sessionId });
+        const { sessionId } = extra;
+        logger.info(`[${TOOL_NAME}] Request received. SessionID: ${sessionId}`, { args });
+
         try {
             // 1. Prepare pagination parameters
-            const paginationParams: PaginationParams = {
+            const servicePaginationParams: PaginationParams = {
                 limit: args.limit,
                 offset: args.offset
             };
 
+            logger.debug(`[${TOOL_NAME}] Calling CongressApiService.getSubResource. SessionID: ${sessionId}`, {
+                parentUri: args.parentUri,
+                subResource: args.subResource,
+                pagination: servicePaginationParams
+            });
+
             // 2. Call the dedicated service method
-            const result = await congressApiService.getSubResource(
+            const serviceResult = await congressApiService.getSubResource(
                 args.parentUri,
                 args.subResource,
-                paginationParams
+                servicePaginationParams
             );
+            logger.debug(`[${TOOL_NAME}] Received result from CongressApiService. SessionID: ${sessionId}`, { parentUri: args.parentUri, subResource: args.subResource });
 
-            // 3. Format the successful output
-            return {
+            // 3. Format the successful output - Refined data formatting for LLM consumption
+            const mcpResult = {
                 content: [{
-                    type: "text" as const,
-                    text: JSON.stringify(result, null, 2)
+                    type: "json" as const, // Assuming 'json' type is supported by MCP SDK
+                    json: serviceResult    // Pass the JSON object directly
                 }]
             };
+            logger.info(`[${TOOL_NAME}] Processing complete, returning structured JSON result. SessionID: ${sessionId}`);
+            return mcpResult;
 
         } catch (error) {
-            logger.error(`Error processing ${TOOL_NAME}`, { error: error instanceof Error ? error.message : String(error), args, sessionId: extra.sessionId });
+            logger.error(`[${TOOL_NAME}] Error processing request. SessionID: ${sessionId}`, { error: error instanceof Error ? error.message : String(error), args });
 
             // Map errors to McpError
-            if (error instanceof InvalidParameterError) { // Handle invalid parentUri format from service
-                throw new McpError(ErrorCode.InvalidParams, error.message);
+            if (error instanceof InvalidParameterError) {
+                throw new McpError(ErrorCode.InvalidParams, `Invalid parameters for ${TOOL_NAME}: ${error.message}`);
             }
-            if (error instanceof ValidationError) { // Should be caught by Zod, but handle defensively
-                throw new McpError(ErrorCode.InvalidParams, `Validation failed: ${error.message}`, error.details);
+            if (error instanceof ValidationError) {
+                throw new McpError(ErrorCode.InvalidParams, `Validation error in ${TOOL_NAME}: ${error.message}`, error.details);
             }
-            if (error instanceof NotFoundError) { // Parent or sub-resource not found at API
-                // Use InvalidRequest as the parent URI or subResource was likely invalid if API 404'd
-                throw new McpError(ErrorCode.InvalidRequest, `Sub-resource or parent not found: ${error.message}`);
+            if (error instanceof NotFoundError) {
+                throw new McpError(ErrorCode.InvalidRequest, `Sub-resource or parent not found in ${TOOL_NAME}: ${error.message}`);
             }
             if (error instanceof RateLimitError) {
-                // Use InternalError for rate limits, as the server itself isn't unavailable
-                throw new McpError(ErrorCode.InternalError, `Rate limit exceeded: ${error.message}`);
+                throw new McpError(ErrorCode.ResourceExhausted, `Rate limit exceeded during ${TOOL_NAME}: ${error.message}`);
             }
             if (error instanceof ApiError) {
-                throw new McpError(ErrorCode.InternalError, `API error fetching sub-resource: ${error.message}`, { statusCode: error.statusCode });
+                throw new McpError(ErrorCode.Unavailable, `API error during ${TOOL_NAME}: ${error.message}`, { statusCode: error.statusCode });
             }
             // Generic internal error
             throw new McpError(
@@ -79,10 +88,10 @@ export const getSubResourceTool = (server: McpServer, congressApiService: Congre
         TOOL_NAME,
         TOOL_DESCRIPTION,
         TOOL_PARAMS,
-        processGetSubResourceRequest as any // Cast if needed
+        processGetSubResourceRequest as any
     );
 
-    logger.info(`Tool registered`, { toolName: TOOL_NAME });
+    logger.info(`Tool '${TOOL_NAME}' registered.`);
 };
 
 // Note: Removed direct import/use of singleton. Service instance should be passed in.

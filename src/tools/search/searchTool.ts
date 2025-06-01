@@ -18,10 +18,12 @@ export const searchTool = (server: McpServer, congressApiService: CongressApiSer
 
     // Type assertion for args based on Zod schema
     const processSearchRequest = async (args: CongressSearchParams, extra: RequestHandlerExtra): Promise<CallToolResult> => {
-        logger.debug(`Processing ${TOOL_NAME} request`, { args, sessionId: extra.sessionId });
+        const { sessionId } = extra;
+        logger.info(`[${TOOL_NAME}] Request received. SessionID: ${sessionId}`, { args });
+
         try {
             // Directly map validated args to the SearchParams type expected by the service
-            const searchParams: SearchParams = {
+            const serviceParams: SearchParams = {
                 query: args.query,
                 filters: args.filters, // Pass the filters object directly
                 sort: args.sort,
@@ -29,43 +31,45 @@ export const searchTool = (server: McpServer, congressApiService: CongressApiSer
                 offset: args.offset
             };
 
-            // Call the refactored service method
-            const result = await congressApiService.searchCollection(args.collection, searchParams);
+            logger.debug(`[${TOOL_NAME}] Calling CongressApiService.searchCollection. SessionID: ${sessionId}`, { collection: args.collection, params: serviceParams });
+            const serviceResult = await congressApiService.searchCollection(args.collection, serviceParams);
+            // Avoid logging potentially very large full results at info level for routine calls.
+            // If needed for deep debugging, enable debug for CongressApiService to see its return.
+            logger.debug(`[${TOOL_NAME}] Received result from CongressApiService. SessionID: ${sessionId}`, { collection: args.collection });
 
-            // Format the successful output for MCP
-            return {
+            // Refined data formatting for LLM consumption: Use 'json' content type
+            const mcpResult = {
                 content: [{
-                    type: "text" as const,
-                    text: JSON.stringify(result, null, 2) // Pretty print JSON
+                    type: "json" as const, // Assuming 'json' type is supported by MCP SDK for structured data
+                    json: serviceResult    // Pass the JSON object directly
                 }]
             };
+            logger.info(`[${TOOL_NAME}] Processing complete, returning structured JSON result. SessionID: ${sessionId}`);
+            return mcpResult;
 
         } catch (error) {
-            logger.error(`Error processing ${TOOL_NAME}`, { error: error instanceof Error ? error.message : String(error), args, sessionId: extra.sessionId });
+            logger.error(`[${TOOL_NAME}] Error processing request. SessionID: ${sessionId}`, { error: error instanceof Error ? error.message : String(error), args });
 
             // Map errors to McpError
-            if (error instanceof InvalidParameterError) { // Handle invalid filters/sort from service
-                throw new McpError(ErrorCode.InvalidParams, error.message);
+            if (error instanceof InvalidParameterError) {
+                throw new McpError(ErrorCode.InvalidParams, `Invalid parameters for ${TOOL_NAME}: ${error.message}`);
             }
-            if (error instanceof ValidationError) { // Should be caught by Zod before handler, but handle defensively
-                throw new McpError(ErrorCode.InvalidParams, `Validation failed: ${error.message}`, error.details);
+            if (error instanceof ValidationError) {
+                throw new McpError(ErrorCode.InvalidParams, `Validation error in ${TOOL_NAME}: ${error.message}`, error.details);
             }
-            if (error instanceof NotFoundError) { // Should not happen for list search, but handle defensively
-                // Use InvalidRequest for a search that finds nothing, or InternalError if it's unexpected
-                throw new McpError(ErrorCode.InvalidRequest, `Search failed: ${error.message}`);
+            if (error instanceof NotFoundError) {
+                throw new McpError(ErrorCode.InvalidRequest, `Search in ${TOOL_NAME} failed (resource not found): ${error.message}`);
             }
             if (error instanceof RateLimitError) {
-                // Use InternalError for rate limits, as the server itself isn't unavailable, just the upstream API
-                // Or potentially a custom error code if the spec allowed, but InternalError is safest.
-                throw new McpError(ErrorCode.InternalError, `Rate limit exceeded: ${error.message}`);
+                throw new McpError(ErrorCode.ResourceExhausted, `Rate limit exceeded during ${TOOL_NAME}: ${error.message}`);
             }
             if (error instanceof ApiError) {
-                throw new McpError(ErrorCode.InternalError, `API error during search: ${error.message}`, { statusCode: error.statusCode });
+                throw new McpError(ErrorCode.Unavailable, `API error during ${TOOL_NAME}: ${error.message}`, { statusCode: error.statusCode });
             }
             // Generic internal error
             throw new McpError(
                 ErrorCode.InternalError,
-                error instanceof Error ? error.message : 'An unexpected error occurred in congress_search.'
+                error instanceof Error ? error.message : `An unexpected error occurred in ${TOOL_NAME}.`
             );
         }
     };
@@ -73,11 +77,11 @@ export const searchTool = (server: McpServer, congressApiService: CongressApiSer
     server.tool(
         TOOL_NAME,
         TOOL_DESCRIPTION,
-        TOOL_PARAMS, // Pass the Zod schema directly
-        processSearchRequest as any // Cast to any to satisfy SDK handler type if needed, ensure signature matches
+        TOOL_PARAMS,
+        processSearchRequest as any
     );
 
-    logger.info(`Tool registered`, { toolName: TOOL_NAME });
+    logger.info(`Tool '${TOOL_NAME}' registered.`);
 };
 
 // Note: Removed direct import/use of singleton. Service instance should be passed in.

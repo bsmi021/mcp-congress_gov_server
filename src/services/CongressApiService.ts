@@ -122,23 +122,40 @@ export class CongressApiService {
      * @throws {NotFoundError} If the API returns a 404 status.
      * @throws {RateLimitError} If rate limits are exceeded before making the call.
      */
-    private async executeRequest(endpoint: string, params: Record<string, string | number | boolean> = {}): Promise<any> {
-        // Check rate limits before making the call
+    private async executeRequest(methodName: string, endpoint: string, params: Record<string, string | number | boolean> = {}): Promise<any> {
+        logger.debug(`[${methodName}] Rate limit check for endpoint: ${endpoint}`);
         if (!this.rateLimitService.canMakeRequest()) {
-            logger.warn(`Rate limit pre-check failed for endpoint: ${endpoint}`);
+            logger.warn(`[${methodName}] Rate limit pre-check failed for endpoint: ${endpoint}. Current requests in window: ${this.rateLimitService.getRemainingRequests() - this.config.maxRequests}, Max: ${this.config.maxRequests}`);
             throw new RateLimitError("Congress.gov API rate limit exceeded (pre-check)");
         }
 
-        // Add context to debug log
-        logger.debug(`Executing API request`, { endpoint, params });
+        // Create a copy of params for logging to avoid modifying the original object passed to axios
+        const logParams = { ...params };
+        if ('api_key' in logParams) { // Should not happen as api_key is in default params
+            delete (logParams as { api_key?: any }).api_key;
+        }
+
+        logger.info(`[${methodName}] Executing API request to endpoint: ${endpoint}`, { params: logParams });
 
         try {
-            // Use internal axios instance with pre-configured base URL, key, timeout
             const response = await this.axiosInstance.get(endpoint, { params });
-            this.rateLimitService.recordRequest(); // Record successful request
+            logger.debug(`[${methodName}] API request successful for endpoint: ${endpoint}`, {
+                status: response.status,
+                headers: { // Log only a subset of potentially useful headers
+                    'content-type': response.headers['content-type'],
+                    'content-length': response.headers['content-length'],
+                    'date': response.headers['date'],
+                    'x-ratelimit-limit': response.headers['x-ratelimit-limit'],
+                    'x-ratelimit-remaining': response.headers['x-ratelimit-remaining'],
+                }
+            });
+            await this.rateLimitService.recordRequest();
+            logger.debug(`[${methodName}] Rate limit request recorded for endpoint: ${endpoint}. Remaining requests: ${this.rateLimitService.getRemainingRequests()}`);
             return response.data;
         } catch (error) {
             // Error handling logic moved here from interceptor for better context
+            // The raw error (including URL with API key) is logged by the interceptor's error handler.
+            // Here we focus on structured error logging after redaction.
             if (axios.isAxiosError(error)) {
                 const status = error.response?.status;
                 const responseData = error.response?.data as any;
@@ -166,144 +183,309 @@ export class CongressApiService {
 
     // --- Specific Item Retrieval Methods (RFC-002) ---
 
+    /**
+     * Retrieves detailed information for a specific bill.
+     * @param params - Parameters identifying the bill (congress, billType, billNumber).
+     * @returns A Promise resolving to the bill details from the API.
+     * @throws {InvalidParameterError} If required parameters are missing or invalid.
+     */
     public async getBillDetails(params: BillResourceParams): Promise<any> {
+        const methodName = "getBillDetails";
+        logger.debug(`[${methodName}] Entered`, { params });
         // Validate numeric parts if needed, assuming they come as strings from URI parsing
+        // Basic validation for required parameters
+        if (!params || typeof params !== 'object') {
+            throw new InvalidParameterError('BillResourceParams object is required.');
+        }
+        if (!params.congress) { // Assuming congress is a number or string representation of it
+            throw new InvalidParameterError('Missing required parameter: congress.');
+        }
+        if (!params.billType || typeof params.billType !== 'string' || params.billType.trim() === '') {
+            throw new InvalidParameterError('Missing or invalid required parameter: billType must be a non-empty string.');
+        }
+        if (!params.billNumber || typeof params.billNumber !== 'string' || params.billNumber.trim() === '') {
+            throw new InvalidParameterError('Missing or invalid required parameter: billNumber must be a non-empty string.');
+        }
         const endpoint = `/bill/${params.congress}/${params.billType}/${params.billNumber}`;
-        return this.executeRequest(endpoint);
+        logger.debug(`[${methodName}] Constructed endpoint: ${endpoint}`);
+        const result = await this.executeRequest(methodName, endpoint);
+        logger.debug(`[${methodName}] Result received`, { endpoint }); // Avoid logging full result data here for brevity
+        return result;
     }
 
+    /**
+     * Retrieves detailed information for a specific member of Congress.
+     * @param params - Parameters identifying the member (memberId).
+     * @returns A Promise resolving to the member details from the API.
+     * @throws {InvalidParameterError} If required parameters are missing or invalid.
+     */
     public async getMemberDetails(params: MemberResourceParams): Promise<any> {
+        const methodName = "getMemberDetails";
+        logger.debug(`[${methodName}] Entered`, { params });
+        if (!params || typeof params !== 'object') {
+            throw new InvalidParameterError('MemberResourceParams object is required.');
+        }
+        if (!params.memberId || typeof params.memberId !== 'string' || params.memberId.trim() === '') {
+            throw new InvalidParameterError('Missing or invalid required parameter: memberId must be a non-empty string.');
+        }
         const endpoint = `/member/${params.memberId}`;
-        return this.executeRequest(endpoint);
+        logger.debug(`[${methodName}] Constructed endpoint: ${endpoint}`);
+        const result = await this.executeRequest(methodName, endpoint);
+        logger.debug(`[${methodName}] Result received`, { endpoint });
+        return result;
     }
 
+    /**
+     * Retrieves detailed information for a specific Congress (e.g., 117th Congress).
+     * @param params - Parameters identifying the Congress (congress number).
+     * @returns A Promise resolving to the Congress details from the API.
+     * @throws {InvalidParameterError} If required parameters are missing or invalid.
+     */
     public async getCongressDetails(params: CongressResourceParams): Promise<any> {
+        const methodName = "getCongressDetails";
+        logger.debug(`[${methodName}] Entered`, { params });
+        if (!params || typeof params !== 'object') {
+            throw new InvalidParameterError('CongressResourceParams object is required.');
+        }
+        if (!params.congress) { // Assuming congress is a number or string representation of it
+            throw new InvalidParameterError('Missing required parameter: congress.');
+        }
         const endpoint = `/congress/${params.congress}`;
-        return this.executeRequest(endpoint);
+        logger.debug(`[${methodName}] Constructed endpoint: ${endpoint}`);
+        const result = await this.executeRequest(methodName, endpoint);
+        logger.debug(`[${methodName}] Result received`, { endpoint });
+        return result;
     }
 
+    /**
+     * Retrieves detailed information for a specific committee.
+     * @param params - Parameters identifying the committee (chamber, committeeCode, optional congress).
+     * @returns A Promise resolving to the committee details from the API.
+     * @throws {InvalidParameterError} If required parameters are missing or invalid.
+     */
     public async getCommitteeDetails(params: CommitteeResourceParams): Promise<any> {
-        // API path seems to be /committee/{chamber}/{code}?congress={congress}
+        const methodName = "getCommitteeDetails";
+        logger.debug(`[${methodName}] Entered`, { params });
+        if (!params || typeof params !== 'object') {
+            throw new InvalidParameterError('CommitteeResourceParams object is required.');
+        }
+        if (!params.chamber || typeof params.chamber !== 'string' || params.chamber.trim() === '') {
+            throw new InvalidParameterError('Missing or invalid required parameter: chamber must be a non-empty string.');
+        }
+        if (!params.committeeCode || typeof params.committeeCode !== 'string' || params.committeeCode.trim() === '') {
+            throw new InvalidParameterError('Missing or invalid required parameter: committeeCode must be a non-empty string.');
+        }
+        // params.congress is optional for this endpoint, so only add if provided
         const endpoint = `/committee/${params.chamber}/${params.committeeCode}`;
         const queryParams: Record<string, string | number> = {};
-        if (params.congress) {
+        if (params.congress) { // Assuming congress is a number or string representation of it
             queryParams.congress = params.congress;
         }
-        return this.executeRequest(endpoint, queryParams);
+        logger.debug(`[${methodName}] Constructed endpoint: ${endpoint}`, { queryParams });
+        const result = await this.executeRequest(methodName, endpoint, queryParams);
+        logger.debug(`[${methodName}] Result received`, { endpoint });
+        return result;
     }
 
+    /**
+     * Retrieves detailed information for a specific amendment.
+     * @param params - Parameters identifying the amendment (congress, amendmentType, amendmentNumber).
+     * @returns A Promise resolving to the amendment details from the API.
+     * @throws {InvalidParameterError} If required parameters are missing or invalid.
+     */
     public async getAmendmentDetails(params: AmendmentResourceParams): Promise<any> {
+        const methodName = "getAmendmentDetails";
+        logger.debug(`[${methodName}] Entered`, { params });
+        if (!params || typeof params !== 'object') {
+            throw new InvalidParameterError('AmendmentResourceParams object is required.');
+        }
+        if (!params.congress) { // Assuming congress is a number or string representation of it
+            throw new InvalidParameterError('Missing required parameter: congress.');
+        }
+        if (!params.amendmentType || typeof params.amendmentType !== 'string' || params.amendmentType.trim() === '') {
+            throw new InvalidParameterError('Missing or invalid required parameter: amendmentType must be a non-empty string.');
+        }
+        if (!params.amendmentNumber || typeof params.amendmentNumber !== 'string' || params.amendmentNumber.trim() === '') {
+            throw new InvalidParameterError('Missing or invalid required parameter: amendmentNumber must be a non-empty string.');
+        }
         const endpoint = `/amendment/${params.congress}/${params.amendmentType}/${params.amendmentNumber}`;
-        return this.executeRequest(endpoint);
+        logger.debug(`[${methodName}] Constructed endpoint: ${endpoint}`);
+        const result = await this.executeRequest(methodName, endpoint);
+        logger.debug(`[${methodName}] Result received`, { endpoint });
+        return result;
     }
 
-    // Add methods for other specific types as needed, mapping params to endpoint structure
-    // public async getNominationDetails(params: NominationResourceParams): Promise<any> { ... }
-    // public async getTreatyDetails(params: TreatyResourceParams): Promise<any> { ... }
-    // public async getCommunicationDetails(params: CommunicationResourceParams): Promise<any> { ... }
-    // public async getCommitteeReportDetails(params: CommitteeReportResourceParams): Promise<any> { ... }
-    // public async getCongressionalRecordDetails(params: CongressionalRecordResourceParams): Promise<any> { ... }
+    // Add methods for other specific types as needed, mapping params to endpoint structure, with similar logging
+    // public async getNominationDetails(params: NominationResourceParams): Promise<any> { ... } // Add logging
+    // public async getTreatyDetails(params: TreatyResourceParams): Promise<any> { ... } // Add logging
+    // public async getCommunicationDetails(params: CommunicationResourceParams): Promise<any> { ... } // Add logging
+    // public async getCommitteeReportDetails(params: CommitteeReportResourceParams): Promise<any> { ... } // Add logging
+    // public async getCongressionalRecordDetails(params: CongressionalRecordResourceParams): Promise<any> { ... } // Add logging
 
 
     // --- List/Search Method (RFC-003) ---
 
+    /**
+     * Searches or lists items within a specified Congress.gov collection.
+     * @param collection - The name of the collection to search (e.g., "bill", "member").
+     * @param params - Search parameters including query, filters, sort, limit, and offset.
+     * @returns A Promise resolving to the search results from the API.
+     * @throws {InvalidParameterError} If unsupported filters or sort options are provided for the collection.
+     */
     public async searchCollection(collection: string, params: SearchParams): Promise<any> {
+        const methodName = "searchCollection";
+        logger.debug(`[${methodName}] Entered`, { collection, params });
+
         const basePath = `/${collection}`; // e.g., /bill, /member
         const queryParams: Record<string, string | number | boolean> = {};
 
         // 1. Add Search Query (if applicable and supported)
         if (params.query) {
             if (this.isQuerySupported(collection)) {
-                queryParams['q'] = params.query; // Assuming 'q' is the parameter name
+                queryParams['q'] = params.query;
+                logger.debug(`[${methodName}] Added 'q' parameter: ${params.query}`);
             } else {
-                logger.warn(`Query parameter '${params.query}' provided but general keyword search ('q') is likely not supported by /${collection} list endpoint. Ignoring query.`);
-                // Do not add 'q' if not supported
+                logger.warn(`[${methodName}] Query parameter '${params.query}' provided but general keyword search ('q') is likely not supported by /${collection} list endpoint. Ignoring query.`);
             }
         }
 
-        // 2. Add Filters (Dynamically check if filter is valid for the collection)
+        // 2. Add Filters
         if (params.filters) {
+            logger.debug(`[${methodName}] Processing filters`, { filters: params.filters });
             for (const [filterKey, filterValue] of Object.entries(params.filters)) {
-                // Ensure value is not undefined/null/empty string before checking support
                 if (filterValue !== undefined && filterValue !== null && filterValue !== '') {
                     if (this.isFilterSupported(collection, filterKey)) {
-                        // Convert boolean to string if necessary for API query params
                         queryParams[filterKey] = typeof filterValue === 'boolean' ? String(filterValue) : filterValue;
+                        logger.debug(`[${methodName}] Added filter '${filterKey}': ${queryParams[filterKey]}`);
                     } else {
-                        // Throw error for unsupported filter as per plan
+                        logger.warn(`[${methodName}] Unsupported filter '${filterKey}' for collection '${collection}'. Throwing error.`);
                         throw new InvalidParameterError(`Filter '${filterKey}' is not supported for collection '${collection}'.`);
                     }
                 }
             }
         }
 
-        // 3. Add Sorting (if applicable and supported)
+        // 3. Add Sorting
         if (params.sort) {
             if (this.isSortSupported(collection)) {
                 queryParams['sort'] = params.sort;
+                logger.debug(`[${methodName}] Added sort parameter: ${params.sort}`);
             } else {
-                // Throw error for unsupported sort
-                throw new InvalidParameterError(`Sorting by 'updateDate' is not supported for collection '${collection}'.`);
+                logger.warn(`[${methodName}] Unsupported sort for collection '${collection}'. Throwing error.`);
+                throw new InvalidParameterError(`Sorting by 'updateDate' (or any sort) is not supported for collection '${collection}'.`);
             }
         }
 
-        // 4. Add Pagination (LAST)
+        // 4. Add Pagination
         if (params.limit !== undefined) {
             queryParams['limit'] = params.limit;
+            logger.debug(`[${methodName}] Added limit parameter: ${params.limit}`);
         }
         if (params.offset !== undefined) {
             queryParams['offset'] = params.offset;
+            logger.debug(`[${methodName}] Added offset parameter: ${params.offset}`);
         }
 
-        // Execute request using internal method
-        return this.executeRequest(basePath, queryParams);
+        logger.debug(`[${methodName}] Constructed endpoint: ${basePath}`, { queryParams });
+        const result = await this.executeRequest(methodName, basePath, queryParams);
+        logger.debug(`[${methodName}] Result received for collection '${collection}'`, { basePath }); // Avoid logging full result
+        return result;
     }
 
 
     // --- Sub-Resource Retrieval Methods (RFC-002) ---
 
-    private getSubResourcePath(parentUri: string, subResource: string): string {
+    /**
+     * Constructs the API path for a sub-resource based on a parent MCP URI.
+     * @param methodName - The name of the calling method, for logging context.
+     * @param parentUri - The MCP URI of the parent entity (e.g., "congress-gov://bill/117/hr/3076").
+     * @param subResource - The name of the sub-resource to access (e.g., "actions").
+     * @returns The constructed API path string (e.g., "/bill/117/hr/3076/actions").
+     * @throws {InvalidParameterError} If the parentUri format is invalid or essential parts are missing.
+     */
+    private getSubResourcePath(methodName: string, parentUri: string, subResource: string): string {
+        logger.debug(`[${methodName}] getSubResourcePath entered`, { parentUri, subResource });
         // Basic parsing, needs robust error handling and validation
-        const url = new URL(parentUri);
+        // Example valid parentUri: "congress-gov://bill/117/hr/3076"
+        // Example valid parentUri: "congress-gov://member/K000393"
+        let url: URL;
+        try {
+            url = new URL(parentUri);
+        } catch (e: any) {
+            logger.warn(`[${methodName}] Invalid parentUri format for URL parsing: "${parentUri}"`, { error: e.message });
+            throw new InvalidParameterError(`Invalid parentUri format. Could not parse as URL: "${parentUri}". Error: ${e.message}`);
+        }
+
         if (url.protocol !== 'congress-gov:') {
-            throw new InvalidParameterError(`Invalid parentUri protocol: ${parentUri}`);
+            logger.warn(`[${methodName}] Invalid parentUri protocol: "${url.protocol}" in "${parentUri}"`);
+            throw new InvalidParameterError(`Invalid parentUri protocol: "${url.protocol}" in "${parentUri}". Expected "congress-gov:".`);
         }
         const collection = url.hostname; // e.g., 'bill', 'member'
         const pathSegments = url.pathname.split('/').filter(p => p); // e.g., ['117', 'hr', '3076'] or ['K000393']
 
         if (!collection) {
-            throw new InvalidParameterError(`Missing collection type (hostname) in parentUri: ${parentUri}`);
+            logger.warn(`[${methodName}] Missing collection type (hostname) in parentUri: "${parentUri}"`);
+            throw new InvalidParameterError(`Missing collection type (hostname) in parentUri: "${parentUri}"`);
         }
         if (pathSegments.length === 0) {
-            throw new InvalidParameterError(`Missing identifier path segments in parentUri: ${parentUri}`);
+            logger.warn(`[${methodName}] Missing identifier path segments in parentUri: "${parentUri}"`);
+            throw new InvalidParameterError(`Missing identifier path segments in parentUri: "${parentUri}"`);
         }
 
         // Construct the correct API path: /collection/segment1/segment2/.../subResource
         const basePath = `/${collection}/${pathSegments.join('/')}`;
-        return `${basePath}/${subResource}`;
+        const fullPath = `${basePath}/${subResource}`;
+        logger.debug(`[${methodName}] Constructed sub-resource path: ${fullPath}`);
+        return fullPath;
     }
 
+    /**
+     * Retrieves a list of sub-resources for a given parent MCP URI.
+     * @param parentUri - The MCP URI of the parent entity.
+     * @param subResource - The name of the sub-resource to retrieve (e.g., "actions", "cosponsors").
+     * @param pagination - Optional pagination parameters (limit, offset).
+     * @returns A Promise resolving to the list of sub-resources from the API.
+     * @throws {InvalidParameterError} If the parentUri format is invalid or the sub-resource is not valid for the parent.
+     */
     public async getSubResource(parentUri: string, subResource: string, pagination?: PaginationParams): Promise<any> {
-        const endpoint = this.getSubResourcePath(parentUri, subResource);
+        const methodName = "getSubResource";
+        logger.debug(`[${methodName}] Entered`, { parentUri, subResource, pagination });
+
+        const endpoint = this.getSubResourcePath(methodName, parentUri, subResource);
         const queryParams: Record<string, string | number> = {};
+
         if (pagination?.limit !== undefined) {
             queryParams['limit'] = pagination.limit;
+            logger.debug(`[${methodName}] Added limit parameter: ${pagination.limit}`);
         }
         if (pagination?.offset !== undefined) {
             queryParams['offset'] = pagination.offset;
+            logger.debug(`[${methodName}] Added offset parameter: ${pagination.offset}`);
         }
-        return this.executeRequest(endpoint, queryParams);
+
+        logger.debug(`[${methodName}] Prepared for executeRequest`, { endpoint, queryParams });
+        const result = await this.executeRequest(methodName, endpoint, queryParams);
+        logger.debug(`[${methodName}] Result received for sub-resource '${subResource}' of '${parentUri}'`, { endpoint }); // Avoid full result
+        return result;
     }
 
-    // --- Add specific wrappers for getSubResource if needed for clarity or type safety ---
+    // --- Add specific wrappers for getSubResource if needed for clarity or type safety --- with logging
     // Example:
     // public async getBillActions(params: BillResourceParams, pagination?: PaginationParams): Promise<any> {
+    //     const methodName = "getBillActions";
+    //     logger.debug(`[${methodName}] Entered`, { params, pagination });
     //     const parentUri = `congress-gov://bill/${params.congress}/${params.billType}/${params.billNumber}`;
-    //     return this.getSubResource(parentUri, 'actions', pagination);
+    //     const result = await this.getSubResource(parentUri, 'actions', pagination); // getSubResource already logs internally
+    //     logger.debug(`[${methodName}] Result received`);
+    //     return result;
     // }
     // public async getMemberSponsoredLegislation(params: MemberResourceParams, pagination?: PaginationParams): Promise<any> {
+    //     const methodName = "getMemberSponsoredLegislation";
+    //     logger.debug(`[${methodName}] Entered`, { params, pagination });
     //     const parentUri = `congress-gov://member/${params.memberId}`;
-    //     return this.getSubResource(parentUri, 'sponsored-legislation', pagination);
+    //     const result = await this.getSubResource(parentUri, 'sponsored-legislation', pagination);
+    //     logger.debug(`[${methodName}] Result received`);
+    //     return result;
     // }
     // ... etc.
 
