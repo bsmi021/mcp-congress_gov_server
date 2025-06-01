@@ -7,7 +7,7 @@ import { TOOL_NAME, TOOL_DESCRIPTION, TOOL_PARAMS, CongressSearchParams } from "
 import { CongressApiService } from "../../services/CongressApiService.js";
 import { ApiError, NotFoundError, RateLimitError, ValidationError, InvalidParameterError } from "../../utils/errors.js"; // Import custom errors
 import { logger } from "../../utils/index.js";
-import { SearchParams } from "../../types/index.js"; // Import the SearchParams type
+import { SearchParams } from "../../types/index.js"; // Import the SearchParams type, CommonContext no longer needed
 
 /**
  * Registers and defines the handler for the congress_search tool.
@@ -18,7 +18,7 @@ export const searchTool = (server: McpServer, congressApiService: CongressApiSer
 
     // Type assertion for args based on Zod schema
     const processSearchRequest = async (args: CongressSearchParams, extra: RequestHandlerExtra): Promise<CallToolResult> => {
-        const { sessionId } = extra;
+        const { sessionId } = extra; // Assuming sessionId is a property of the non-generic RequestHandlerExtra
         logger.info(`[${TOOL_NAME}] Request received. SessionID: ${sessionId}`, { args });
 
         try {
@@ -37,14 +37,14 @@ export const searchTool = (server: McpServer, congressApiService: CongressApiSer
             // If needed for deep debugging, enable debug for CongressApiService to see its return.
             logger.debug(`[${TOOL_NAME}] Received result from CongressApiService. SessionID: ${sessionId}`, { collection: args.collection });
 
-            // Refined data formatting for LLM consumption: Use 'json' content type
+            // Reverting to text-based JSON string for safety, as 'json' type support is unconfirmed.
             const mcpResult = {
                 content: [{
-                    type: "json" as const, // Assuming 'json' type is supported by MCP SDK for structured data
-                    json: serviceResult    // Pass the JSON object directly
+                    type: "text" as const,
+                    text: JSON.stringify(serviceResult, null, 2) // Pretty print JSON
                 }]
             };
-            logger.info(`[${TOOL_NAME}] Processing complete, returning structured JSON result. SessionID: ${sessionId}`);
+            logger.info(`[${TOOL_NAME}] Processing complete, returning stringified JSON result. SessionID: ${sessionId}`);
             return mcpResult;
 
         } catch (error) {
@@ -61,10 +61,14 @@ export const searchTool = (server: McpServer, congressApiService: CongressApiSer
                 throw new McpError(ErrorCode.InvalidRequest, `Search in ${TOOL_NAME} failed (resource not found): ${error.message}`);
             }
             if (error instanceof RateLimitError) {
-                throw new McpError(ErrorCode.ResourceExhausted, `Rate limit exceeded during ${TOOL_NAME}: ${error.message}`);
+                // Reverting to InternalError as ResourceExhausted might not be standard or available.
+                // InternalError is a safe fallback for upstream service issues like rate limiting.
+                throw new McpError(ErrorCode.InternalError, `Rate limit exceeded during ${TOOL_NAME}: ${error.message}`);
             }
             if (error instanceof ApiError) {
-                throw new McpError(ErrorCode.Unavailable, `API error during ${TOOL_NAME}: ${error.message}`, { statusCode: error.statusCode });
+                // Reverting to InternalError as Unavailable might not be standard or available.
+                // InternalError is a safe fallback for general upstream API errors.
+                throw new McpError(ErrorCode.InternalError, `API error during ${TOOL_NAME}: ${error.message}`, { statusCode: error.statusCode });
             }
             // Generic internal error
             throw new McpError(

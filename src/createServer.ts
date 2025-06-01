@@ -14,6 +14,7 @@ import {
 // Import potentially internal types from specific paths based on mcp.d.ts
 import { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import { Variables } from "@modelcontextprotocol/sdk/shared/uriTemplate.js";
+// import { CommonContext } from "./types/index.js"; // No longer needed as RequestHandlerExtra is not generic
 import { ConfigurationManager } from "./config/ConfigurationManager.js";
 import { logger } from "./utils/index.js";
 // Import custom errors - will be used inside handlers later
@@ -60,7 +61,7 @@ export function createServer(): McpServer {
     // Instantiate the service here to pass to handlers
     const congressApiService = new CongressApiService();
 
-    // --- Register Resources ---
+// --- Register Resources ---
 
     // Define read callbacks that accept and pass the service instance
     // Signatures need to match ReadResourceCallback / ReadResourceTemplateCallback

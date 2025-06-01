@@ -82,4 +82,12 @@ export class RateLimitService {
         const oldestRequestInWindow = Math.min(...this.requestTimes);
         return oldestRequestInWindow + (this.config.perHours * 60 * 60 * 1000);
     }
+
+    /**
+     * Gets the configured maximum number of requests for the rate limit window.
+     * @returns {number} The maximum number of requests.
+     */
+    public getMaxRequests(): number {
+        return this.config.maxRequests;
+    }
 }

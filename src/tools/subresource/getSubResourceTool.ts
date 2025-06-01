@@ -5,9 +5,9 @@ import { z } from "zod";
 import { TOOL_NAME, TOOL_DESCRIPTION, TOOL_PARAMS, CongressGetSubResourceParams } from "./getSubResourceParams.js";
 // Import the service class, not the singleton instance
 import { CongressApiService } from "../../services/CongressApiService.js";
-import { ApiError, NotFoundError, RateLimitError, ValidationError, ResourceError, InvalidParameterError } from "../../utils/errors.js"; // Added InvalidParameterError
+import { ApiError, NotFoundError, RateLimitError, ValidationError, InvalidParameterError } from "../../utils/errors.js"; // Removed ResourceError as it's not used here, InvalidParameterError is used
 import { logger } from "../../utils/index.js";
-import { PaginationParams } from "../../types/index.js"; // Import PaginationParams
+import { PaginationParams } from "../../types/index.js"; // Import PaginationParams, CommonContext no longer needed
 
 /**
  * Parses the parent URI and extracts the base API path segment.
@@ -23,7 +23,7 @@ import { PaginationParams } from "../../types/index.js"; // Import PaginationPar
 export const getSubResourceTool = (server: McpServer, congressApiService: CongressApiService): void => { // Inject service instance
 
     const processGetSubResourceRequest = async (args: CongressGetSubResourceParams, extra: RequestHandlerExtra): Promise<CallToolResult> => {
-        const { sessionId } = extra;
+        const { sessionId } = extra; // Assuming sessionId is a property of the non-generic RequestHandlerExtra
         logger.info(`[${TOOL_NAME}] Request received. SessionID: ${sessionId}`, { args });
 
         try {
@@ -47,14 +47,14 @@ export const getSubResourceTool = (server: McpServer, congressApiService: Congre
             );
             logger.debug(`[${TOOL_NAME}] Received result from CongressApiService. SessionID: ${sessionId}`, { parentUri: args.parentUri, subResource: args.subResource });
 
-            // 3. Format the successful output - Refined data formatting for LLM consumption
+            // 3. Format the successful output - Reverting to text-based JSON string for safety.
             const mcpResult = {
                 content: [{
-                    type: "json" as const, // Assuming 'json' type is supported by MCP SDK
-                    json: serviceResult    // Pass the JSON object directly
+                    type: "text" as const,
+                    text: JSON.stringify(serviceResult, null, 2) // Pretty print JSON
                 }]
             };
-            logger.info(`[${TOOL_NAME}] Processing complete, returning structured JSON result. SessionID: ${sessionId}`);
+            logger.info(`[${TOOL_NAME}] Processing complete, returning stringified JSON result. SessionID: ${sessionId}`);
             return mcpResult;
 
         } catch (error) {
@@ -71,10 +71,14 @@ export const getSubResourceTool = (server: McpServer, congressApiService: Congre
                 throw new McpError(ErrorCode.InvalidRequest, `Sub-resource or parent not found in ${TOOL_NAME}: ${error.message}`);
             }
             if (error instanceof RateLimitError) {
-                throw new McpError(ErrorCode.ResourceExhausted, `Rate limit exceeded during ${TOOL_NAME}: ${error.message}`);
+                // Reverting to InternalError as ResourceExhausted might not be standard or available.
+                // InternalError is a safe fallback for upstream service issues like rate limiting.
+                throw new McpError(ErrorCode.InternalError, `Rate limit exceeded during ${TOOL_NAME}: ${error.message}`);
             }
             if (error instanceof ApiError) {
-                throw new McpError(ErrorCode.Unavailable, `API error during ${TOOL_NAME}: ${error.message}`, { statusCode: error.statusCode });
+                // Reverting to InternalError as Unavailable might not be standard or available.
+                // InternalError is a safe fallback for general upstream API errors.
+                throw new McpError(ErrorCode.InternalError, `API error during ${TOOL_NAME}: ${error.message}`, { statusCode: error.statusCode });
             }
             // Generic internal error
             throw new McpError(

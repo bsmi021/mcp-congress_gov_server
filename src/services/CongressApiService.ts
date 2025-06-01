@@ -125,7 +125,9 @@ export class CongressApiService {
     private async executeRequest(methodName: string, endpoint: string, params: Record<string, string | number | boolean> = {}): Promise<any> {
         logger.debug(`[${methodName}] Rate limit check for endpoint: ${endpoint}`);
         if (!this.rateLimitService.canMakeRequest()) {
-            logger.warn(`[${methodName}] Rate limit pre-check failed for endpoint: ${endpoint}. Current requests in window: ${this.rateLimitService.getRemainingRequests() - this.config.maxRequests}, Max: ${this.config.maxRequests}`);
+            const maxReq = this.rateLimitService.getMaxRequests();
+            const currentReq = maxReq - this.rateLimitService.getRemainingRequests();
+            logger.warn(`[${methodName}] Rate limit pre-check failed for endpoint: ${endpoint}. Current requests in window: ${currentReq}, Max: ${maxReq}`);
             throw new RateLimitError("Congress.gov API rate limit exceeded (pre-check)");
         }
 
